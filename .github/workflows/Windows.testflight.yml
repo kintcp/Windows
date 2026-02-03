@@ -96,45 +96,9 @@ jobs:
             /p:AppxPackageSigningEnabled=true `
             /p:GenerateAppxPackageOnBuild=true `
             --restore
-          msbuild .\Desktop\Desktop.csproj `
-            /m `
-            /p:Configuration="Release" `
-            /p:Platform="x64" `
-            /p:RuntimeIdentifier="win-x64" `
-            /p:WindowsPackageType="None" `
-            /p:WindowsAppSDKSelfContained=true `
-            /p:SelfContained=true `
-            /p:PublishSingleFile=false `
-            /p:PublishDir="Portable" `
-            /t:Publish `
-            --restore
           cd .\Desktop
           .\merge_zip.ps1
           .\merge_appx.ps1
-        shell: pwsh
-
-      - name: 🖋️ Sign Executable
-        run: |
-          # 1. 找到 Signtool.exe 的路径 (通常在 Windows SDK 中)
-          $signtool = Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\bin" -Filter signtool.exe -Recurse | Select-Object -First 1 -ExpandProperty FullName
-          
-          # 2. 定义待签名的 exe 路径 (需与你 MSBuild 中的 PublishDir 对应)
-          $exePath = "${{ github.workspace }}\Portable\iPlay.exe"
-          
-          # 3. 使用证书进行签名
-          # 使用已导入证书的指纹 (Thumbprint) 进行匹配
-          & $signtool sign /sha1 "028ACD7A6EF34F66E29087B84A40B6579187570B" `
-            /fd sha256 `
-            /tr http://timestamp.digicert.com `
-            /td sha256 `
-            "$exePath"
-            
-          # 定义发布目录和压缩包名称
-          $publishDir = "${{ github.workspace }}\Portable"
-          $zipPath = "${{ github.workspace }}\iPlay_Portable_x64.zip"
-          
-          # 执行压缩操作
-          Compress-Archive -Path "$publishDir\*" -DestinationPath "$zipPath" -Force
         shell: pwsh
 
       - name: 🎉 Release Notes
