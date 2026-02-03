@@ -96,6 +96,18 @@ jobs:
             /p:AppxPackageSigningEnabled=true `
             /p:GenerateAppxPackageOnBuild=true `
             --restore
+          msbuild .\Desktop\Desktop.csproj `
+            /m `
+            /p:Configuration="Release" `
+            /p:Platform="x64" `
+            /p:RuntimeIdentifier="win-x64" `
+            /p:WindowsPackageType="None" `
+            /p:WindowsAppSDKSelfContained=true `
+            /p:SelfContained=true `
+            /p:PublishSingleFile=false `
+            /p:PublishDir="Portable" `
+            /t:Publish `
+            --restore
           cd .\Desktop
           .\merge_zip.ps1
           .\merge_appx.ps1
