@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: saltpi/iPlay.Windows
-          ref: feature/aot
+          ref: develop
           fetch-depth: 0
           token: ${{ secrets.REPO_TOKEN }} 
 
