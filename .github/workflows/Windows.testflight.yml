@@ -28,6 +28,7 @@ jobs:
       version_code: ${{ steps.version.outputs.version_code }}
       build_id: ${{ steps.version.outputs.build_id }}
       buildtime: ${{ steps.version.outputs.buildtime }}
+
     steps:
       - name: 🌸 Checkout
         uses: actions/checkout@v4
@@ -87,24 +88,58 @@ jobs:
         with:
           arch: ${{ matrix.vc_arch }}
 
-      - name: 🔧 Add LLVM ARM64 compiler-rt lib path
-        if: matrix.platform == 'ARM64'
+      - name: 🔧 Create LLVM runtime props
         shell: pwsh
         run: |
-          $builtin = Get-ChildItem `
+          $arm64Builtin = Get-ChildItem `
             "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Tools\Llvm\ARM64\lib\clang\*\lib\windows\clang_rt.builtins-aarch64.lib" `
             -ErrorAction SilentlyContinue |
             Select-Object -First 1
 
-          if (-not $builtin) {
+          if (-not $arm64Builtin) {
             throw "clang_rt.builtins-aarch64.lib not found"
           }
 
-          $dir = $builtin.Directory.FullName
-          Write-Host "Found: $($builtin.FullName)"
-          Write-Host "Add LIB path: $dir"
+          $x64Builtin = Get-ChildItem `
+            "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Tools\Llvm\x64\lib\clang\*\lib\windows\clang_rt.builtins-x86_64.lib" `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
 
-          echo "LIB=$dir;$env:LIB" >> $env:GITHUB_ENV
+          $arm64LibDir = $arm64Builtin.Directory.FullName
+          $x64LibDir = if ($x64Builtin) { $x64Builtin.Directory.FullName } else { "" }
+
+          Write-Host "Found ARM64 LLVM builtins: $($arm64Builtin.FullName)"
+          Write-Host "ARM64 LLVM lib dir: $arm64LibDir"
+
+          if ($x64Builtin) {
+            Write-Host "Found x64 LLVM builtins: $($x64Builtin.FullName)"
+            Write-Host "x64 LLVM lib dir: $x64LibDir"
+          } else {
+            Write-Host "x64 LLVM builtins not found, skip x64 LLVM lib dir."
+          }
+
+          $propsPath = Join-Path $env:GITHUB_WORKSPACE "llvm-runtime.props"
+
+          @"
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemDefinitionGroup Condition="'`$(Platform)' == 'ARM64'">
+    <Link>
+      <AdditionalLibraryDirectories>$arm64LibDir;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>/LIBPATH:&quot;$arm64LibDir&quot; %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'`$(Platform)' == 'x64' And '$x64LibDir' != ''">
+    <Link>
+      <AdditionalLibraryDirectories>$x64LibDir;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>/LIBPATH:&quot;$x64LibDir&quot; %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>
+"@ | Set-Content -Path $propsPath -Encoding UTF8
+
+          Write-Host "Generated props:"
+          Get-Content $propsPath
 
       - name: 🔎 Check build environment
         shell: pwsh
@@ -168,6 +203,7 @@ jobs:
             /p:PackageOptionalProjectsInIdeBuilds=False `
             /p:AppxPackageSigningEnabled=true `
             /p:GenerateAppxPackageOnBuild=true `
+            "/p:ForceImportAfterCppProps=$env:GITHUB_WORKSPACE\llvm-runtime.props" `
             --restore
 
       - name: 📦 Upload ${{ matrix.platform }} AppPackages
@@ -197,6 +233,7 @@ jobs:
       - prepare
       - build
     runs-on: windows-2022
+    if: github.event_name != 'pull_request'
 
     env:
       version_code: ${{ needs.prepare.outputs.version_code }}
