@@ -214,7 +214,7 @@ jobs:
           name: apppackages-${{ matrix.platform }}
           path: Desktop/AppPackages/**
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
 
       - name: 🧹 Remove Installed Certificate
         if: always()
