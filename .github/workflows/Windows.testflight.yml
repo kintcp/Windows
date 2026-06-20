@@ -15,7 +15,7 @@ on:
       ref:
         description: "Name of the branch"
         required: false
-        default: ""
+        default: "develop"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
