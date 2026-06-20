@@ -22,183 +22,165 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-release:
-    env:
-      Solution_Name: iPlay
-      Project_Directory: iPlay.X
+  prepare:
     runs-on: windows-2022
-    # runs-on: self-hosted
-    steps:          
+    outputs:
+      version_code: ${{ steps.version.outputs.version_code }}
+      build_id: ${{ steps.version.outputs.build_id }}
+      buildtime: ${{ steps.version.outputs.buildtime }}
+    steps:
       - name: 🌸 Checkout
         uses: actions/checkout@v4
         with:
           repository: saltpi/iPlay.Windows
-          ref: develop
+          ref: ${{ github.event.inputs.ref || 'develop' }}
           fetch-depth: 0
-          token: ${{ secrets.REPO_TOKEN }} 
+          token: ${{ secrets.REPO_TOKEN }}
+
+      - name: 🔢 Prepare version
+        id: version
+        shell: bash
+        run: |
+          version_code="$(git rev-list --count HEAD)"
+          build_id="$(git rev-parse --short HEAD)"
+          buildtime="$(date '+%Y%m%d.%H%M')"
+
+          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
+          echo "build_id=$build_id" >> "$GITHUB_OUTPUT"
+          echo "buildtime=$buildtime" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    runs-on: windows-2022
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x64
+            runtime_identifier: win-x64
+            vc_arch: amd64
+
+          - platform: ARM64
+            runtime_identifier: win-arm64
+            vc_arch: amd64_arm64
+
+    env:
+      Solution_Name: iPlay
+      Project_Directory: iPlay.X
+
+    steps:
+      - name: 🌸 Checkout
+        uses: actions/checkout@v4
+        with:
+          repository: saltpi/iPlay.Windows
+          ref: ${{ github.event.inputs.ref || 'develop' }}
+          fetch-depth: 0
+          token: ${{ secrets.REPO_TOKEN }}
 
       - name: 👷 Setup MSBuild.exe
         uses: microsoft/setup-msbuild@v2
 
-      - name: 🔎 Check LLVM ARM64 runtime
+      - name: 👷 Setup MSVC Dev Cmd
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.vc_arch }}
+
+      - name: 🔧 Add LLVM ARM64 compiler-rt lib path
+        if: matrix.platform == 'ARM64'
+        shell: pwsh
+        run: |
+          $builtin = Get-ChildItem `
+            "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Tools\Llvm\ARM64\lib\clang\*\lib\windows\clang_rt.builtins-aarch64.lib" `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if (-not $builtin) {
+            throw "clang_rt.builtins-aarch64.lib not found"
+          }
+
+          $dir = $builtin.Directory.FullName
+          Write-Host "Found: $($builtin.FullName)"
+          Write-Host "Add LIB path: $dir"
+
+          echo "LIB=$dir;$env:LIB" >> $env:GITHUB_ENV
+
+      - name: 🔎 Check build environment
         shell: pwsh
         run: |
           where msbuild
           where clang-cl
-      
-          Write-Host "=== Find clang_rt.builtins-aarch64.lib ==="
-          Get-ChildItem `
-            "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Tools\Llvm\*\lib\clang\*\lib\windows\clang_rt.builtins-aarch64.lib" `
-            -ErrorAction SilentlyContinue |
-            Select-Object FullName
-      
+
+          Write-Host "Platform: ${{ matrix.platform }}"
+          Write-Host "RuntimeIdentifier: ${{ matrix.runtime_identifier }}"
+          Write-Host "VC arch: ${{ matrix.vc_arch }}"
+
           Write-Host "=== LIB ==="
           $env:LIB -split ';'
-        
+
       - name: ⏰ Cache
         uses: actions/cache@v4
         with:
           path: ~\.nuget\packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}
+          key: ${{ runner.os }}-nuget-${{ matrix.platform }}-${{ hashFiles('**/packages.lock.json') }}
           restore-keys: |
+            ${{ runner.os }}-nuget-${{ matrix.platform }}-
             ${{ runner.os }}-nuget-
-            
+
       - name: ⏬ Install deps
-        run: |
-          # nuget install X.Player\packages.config
-          nuget restore X.Player\X.Player.vcxproj -OutputDirectory packages
         shell: pwsh
+        run: |
+          nuget restore X.Player\X.Player.vcxproj -OutputDirectory packages
 
       - name: ✅ Decode and Import Certificate
+        shell: pwsh
         run: |
           $base64Data = "${{ secrets.CERTIFICATE_PFX }}"
           $bytes = [Convert]::FromBase64String($base64Data)
-          $certificatePath = Join-Path -Path ${{ github.workspace }} -ChildPath signing_cert.pfx
+          $certificatePath = Join-Path -Path "${{ github.workspace }}" -ChildPath signing_cert.pfx
           [System.IO.File]::WriteAllBytes("$certificatePath", $bytes)
-          Import-PfxCertificate -FilePath "$certificatePath" -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString -String "${{ secrets.CERTIFICATE_PASSWORD }}" -Force -AsPlainText)
-        shell: pwsh
+
+          Import-PfxCertificate `
+            -FilePath "$certificatePath" `
+            -CertStoreLocation Cert:\CurrentUser\My `
+            -Password (ConvertTo-SecureString -String "${{ secrets.CERTIFICATE_PASSWORD }}" -Force -AsPlainText)
 
       - name: ✅ Verify Certificate Installation
-        run: |
-          Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.Thumbprint -eq "028ACD7A6EF34F66E29087B84A40B6579187570B" }
         shell: pwsh
+        run: |
+          Get-ChildItem Cert:\CurrentUser\My |
+            Where-Object { $_.Thumbprint -eq "028ACD7A6EF34F66E29087B84A40B6579187570B" }
 
-    # https://github.com/andrewleader/WindowsAppSDKGallery/blob/main/.github/workflows/dotnet-desktop.yml#L102
-      - name: 🧬 Build store package
+      - name: 🧬 Build ${{ matrix.platform }} store package
+        shell: pwsh
         run: |
           .\Desktop\version.ps1
+
           msbuild .\Desktop\Desktop.csproj `
             /m `
             /p:Configuration="release" `
-            /p:Platform="x64" `
-            /p:RuntimeIdentifier="win-x64" `
-            /p:AppxBundlePlatforms="x64|ARM64" `
+            /p:Platform="${{ matrix.platform }}" `
+            /p:RuntimeIdentifier="${{ matrix.runtime_identifier }}" `
+            /p:AppxBundlePlatforms="${{ matrix.platform }}" `
             /p:AppxBundle=Never `
             /p:UapAppxPackageBuildMode=StoreUpload `
             /p:PackageOptionalProjectsInIdeBuilds=False `
             /p:AppxPackageSigningEnabled=true `
             /p:GenerateAppxPackageOnBuild=true `
             --restore
-          msbuild .\Desktop\Desktop.csproj `
-            /m `
-            /p:Configuration="release" `
-            /p:Platform="ARM64" `
-            /p:RuntimeIdentifier="win-arm64" `
-            /p:AppxBundle=Never `
-            /p:AppxBundlePlatforms="x64|ARM64" `
-            /p:UapAppxPackageBuildMode=StoreUpload `
-            /p:PackageOptionalProjectsInIdeBuilds=False `
-            /p:AppxPackageSigningEnabled=true `
-            /p:GenerateAppxPackageOnBuild=true `
-            --restore
-          cd .\Desktop
-          .\merge_zip.ps1
-          .\merge_appx.ps1
-        shell: pwsh
 
-      - name: 🎉 Release Notes
-        run: |
-          echo "version_code=$(git rev-list --count HEAD)" >> $GITHUB_ENV
-          echo "build_id=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-          echo version_name="v1.0 $(git rev-parse --short HEAD)" >> $GITHUB_ENV
-        shell: bash
-
-      # - name: ⏫ Upload to Onedrive
-      #   run: |
-      #     version_code="$(git rev-list --count HEAD)"
-      #     buildtime=$(date '+%Y%m%d.%H%M')
-      #     mkdir -p Desktop/Publish
-      #     cp "Desktop/AppPackages/ZipPackages/iPlayX_1.0.${version_code}.0_ARM64_Sideload.zip" Desktop/Publish/
-      #     cp "Desktop/AppPackages/ZipPackages/iPlayX_1.0.${version_code}.0_x64_Sideload.zip" Desktop/Publish/
-      #     cp "Desktop/AppPackages/iPlayX_1.0.${version_code}.0.msixbundle" Desktop/Publish/
-      #     python -m pip install requests
-      #     python ./scripts/upload.py --url "https://drive.ourfor.top/od_bot/build/iPlay/Windows/iPlay_1.0.${version_code}.0.msixbundle" \
-      #       --file "$PWD/Desktop/Publish/iPlayX_1.0.${version_code}.0.msixbundle" \
-      #       --token "${{ secrets.CLIENT_ID }}"
-      #     python ./scripts/upload.py --url "https://drive.ourfor.top/od_bot/build/iPlay/Windows/iPlayX_1.0.${version_code}.0_ARM64_Sideload.zip" \
-      #       --file "$PWD/Desktop/Publish/iPlayX_1.0.${version_code}.0_ARM64_Sideload.zip" \
-      #       --token "${{ secrets.CLIENT_ID }}"
-      #     python ./scripts/upload.py --url "https://drive.ourfor.top/od_bot/build/iPlay/Windows/iPlayX_1.0.${version_code}.0_x64_Sideload.zip" \
-      #       --file "$PWD/Desktop/Publish/iPlayX_1.0.${version_code}.0_x64_Sideload.zip" \
-      #       --token "${{ secrets.CLIENT_ID }}"
-
-      #     echo "https://drive.ourfor.top/od_bot/build/iPlay/Windows/iPlayX_1.0.${version_code}.0_x64_Sideload.zip" > "$PWD/latest.zip.url"
-      #     python ./scripts/upload.py --url "https://drive.ourfor.top/od_bot/build/iPlay/Windows/latest.zip.url" \
-      #       --file "$PWD/latest.zip.url" \
-      #       --token "${{ secrets.ONEDRIVE_CLIENT_ID }}"
-      #     ls Desktop/Publish
-      #   shell: bash
-      - name: 🔢 Update Build Number
-        id: update_build_number
-        run: |
-          version_code="$(git rev-list --count HEAD)"
-          buildtime=$(date '+%Y%m%d.%H%M')
-          echo "version_code=$version_code" >> $GITHUB_OUTPUT
-          echo "buildtime=$buildtime" >> $GITHUB_OUTPUT
-          mkdir -p Desktop/Publish
-          cp "Desktop/AppPackages/ZipPackages/iPlayX_1.0.${version_code}.0_ARM64_Sideload.zip" Desktop/Publish/
-          cp "Desktop/AppPackages/ZipPackages/iPlayX_1.0.${version_code}.0_x64_Sideload.zip" Desktop/Publish/
-          cp "Desktop/AppPackages/iPlayX_1.0.${version_code}.0.msixbundle" Desktop/Publish/
-        shell: bash
-          
-      - name: 🏷️ Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: 📦 Upload ${{ matrix.platform }} AppPackages
+        uses: actions/upload-artifact@v4
         with:
-          repository: endpne/iPlay-Release-Windows
-          token: ${{ secrets.GH_RELEASE_TOKEN }}
-          name: Windows Build ${{ steps.update_build_number.outputs.version_code }}
-          tag_name: windows-build-${{ steps.update_build_number.outputs.version_code }}
-          make_latest: true
-          body: |
-            Windows TestFlight Build ${{ steps.update_build_number.outputs.version_code }}
-            
-            Build artifacts:
-            - iPlay.msixbundle (TestFlight package)
-            
-            **Installation Options:**
-            1. Use the .msixbundle file for TestFlight distribution
-          files: |
-            Desktop/AppPackages/ZipPackages/iPlayX_1.0.${{ steps.update_build_number.outputs.version_code }}.0_ARM64_Sideload.zip
-            Desktop/AppPackages/ZipPackages/iPlayX_1.0.${{ steps.update_build_number.outputs.version_code }}.0_x64_Sideload.zip
-            Desktop/AppPackages/iPlayX_1.0.${{ steps.update_build_number.outputs.version_code }}.0.msixbundle
-            
-      
-      - name: ⬆️ Submit to Microsoft Store
-        uses: ourfor/windows-store-action@1.0.5
-        with:
-          tenant-id: "f11cb049-47ea-4ac4-b157-de33439868de"
-          client-id: "${{ secrets.STORE_CLIENT_ID }}"
-          client-secret: "${{ secrets.STORE_CLIENT_SECRET }}"
-          package-path: "Desktop/Publish"
-          app-id: "9NBZ2BXD4WFZ"
-          flight-id: "cc78bd2f-f625-4e26-aeff-2ca1b3c486ab" # Beta
-          # flight-id: "47fcb686-2a9d-437f-965f-1dcab3b37e31" # Nightly
-          delete-packages: false
-          packages-keep: true
-          skip-polling: true
+          name: apppackages-${{ matrix.platform }}
+          path: Desktop/AppPackages/**
+          if-no-files-found: error
+          retention-days: 7
 
       - name: 🧹 Remove Installed Certificate
         if: always()
+        shell: pwsh
         run: |
           $thumbprint = "028ACD7A6EF34F66E29087B84A40B6579187570B"
           $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Thumbprint -eq $thumbprint }
@@ -208,4 +190,113 @@ jobs:
           } else {
             Write-Host "Certificate with thumbprint $thumbprint not found."
           }
+
+  package-and-release:
+    name: Package and Release
+    needs:
+      - prepare
+      - build
+    runs-on: windows-2022
+
+    env:
+      version_code: ${{ needs.prepare.outputs.version_code }}
+      build_id: ${{ needs.prepare.outputs.build_id }}
+      buildtime: ${{ needs.prepare.outputs.buildtime }}
+      version_name: v1.0 ${{ needs.prepare.outputs.build_id }}
+
+    steps:
+      - name: 🌸 Checkout
+        uses: actions/checkout@v4
+        with:
+          repository: saltpi/iPlay.Windows
+          ref: ${{ github.event.inputs.ref || 'develop' }}
+          fetch-depth: 0
+          token: ${{ secrets.REPO_TOKEN }}
+
+      - name: 📥 Download AppPackages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: apppackages-*
+          path: Desktop/AppPackages
+          merge-multiple: true
+
+      - name: 🔎 List downloaded files
         shell: pwsh
+        run: |
+          Get-ChildItem Desktop\AppPackages -Recurse | Select-Object FullName
+
+      - name: ✅ Decode and Import Certificate
+        shell: pwsh
+        run: |
+          $base64Data = "${{ secrets.CERTIFICATE_PFX }}"
+          $bytes = [Convert]::FromBase64String($base64Data)
+          $certificatePath = Join-Path -Path "${{ github.workspace }}" -ChildPath signing_cert.pfx
+          [System.IO.File]::WriteAllBytes("$certificatePath", $bytes)
+
+          Import-PfxCertificate `
+            -FilePath "$certificatePath" `
+            -CertStoreLocation Cert:\CurrentUser\My `
+            -Password (ConvertTo-SecureString -String "${{ secrets.CERTIFICATE_PASSWORD }}" -Force -AsPlainText)
+
+      - name: 📦 Merge packages
+        shell: pwsh
+        run: |
+          cd .\Desktop
+          .\merge_zip.ps1
+          .\merge_appx.ps1
+
+      - name: 🔢 Prepare publish files
+        shell: bash
+        run: |
+          mkdir -p Desktop/Publish
+
+          cp "Desktop/AppPackages/ZipPackages/iPlayX_1.0.${version_code}.0_ARM64_Sideload.zip" Desktop/Publish/
+          cp "Desktop/AppPackages/ZipPackages/iPlayX_1.0.${version_code}.0_x64_Sideload.zip" Desktop/Publish/
+          cp "Desktop/AppPackages/iPlayX_1.0.${version_code}.0.msixbundle" Desktop/Publish/
+
+      - name: 🏷️ Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: endpne/iPlay-Release-Windows
+          token: ${{ secrets.GH_RELEASE_TOKEN }}
+          name: Windows Build ${{ needs.prepare.outputs.version_code }}
+          tag_name: windows-build-${{ needs.prepare.outputs.version_code }}
+          make_latest: true
+          body: |
+            Windows TestFlight Build ${{ needs.prepare.outputs.version_code }}
+
+            Build artifacts:
+            - iPlay.msixbundle (TestFlight package)
+
+            **Installation Options:**
+            1. Use the .msixbundle file for TestFlight distribution
+          files: |
+            Desktop/AppPackages/ZipPackages/iPlayX_1.0.${{ needs.prepare.outputs.version_code }}.0_ARM64_Sideload.zip
+            Desktop/AppPackages/ZipPackages/iPlayX_1.0.${{ needs.prepare.outputs.version_code }}.0_x64_Sideload.zip
+            Desktop/AppPackages/iPlayX_1.0.${{ needs.prepare.outputs.version_code }}.0.msixbundle
+
+      - name: ⬆️ Submit to Microsoft Store
+        uses: ourfor/windows-store-action@1.0.5
+        with:
+          tenant-id: "f11cb049-47ea-4ac4-b157-de33439868de"
+          client-id: "${{ secrets.STORE_CLIENT_ID }}"
+          client-secret: "${{ secrets.STORE_CLIENT_SECRET }}"
+          package-path: "Desktop/Publish"
+          app-id: "9NBZ2BXD4WFZ"
+          flight-id: "cc78bd2f-f625-4e26-aeff-2ca1b3c486ab"
+          delete-packages: false
+          packages-keep: true
+          skip-polling: true
+
+      - name: 🧹 Remove Installed Certificate
+        if: always()
+        shell: pwsh
+        run: |
+          $thumbprint = "028ACD7A6EF34F66E29087B84A40B6579187570B"
+          $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Thumbprint -eq $thumbprint }
+          if ($cert) {
+            Remove-Item -Path "Cert:\CurrentUser\My\$thumbprint" -Force
+            Write-Host "Certificate with thumbprint $thumbprint has been removed."
+          } else {
+            Write-Host "Certificate with thumbprint $thumbprint not found."
+          }
