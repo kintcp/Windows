@@ -88,7 +88,7 @@ jobs:
         with:
           arch: ${{ matrix.vc_arch }}
 
-      - name: 🔧 Create LLVM runtime props
+      - name: 🔧 Create LLVM runtime targets
         shell: pwsh
         run: |
           $arm64Builtin = Get-ChildItem `
@@ -118,28 +118,30 @@ jobs:
             Write-Host "x64 LLVM builtins not found, skip x64 LLVM lib dir."
           }
 
-          $propsPath = Join-Path $env:GITHUB_WORKSPACE "llvm-runtime.props"
+          $targetsPath = Join-Path $env:GITHUB_WORKSPACE "llvm-runtime.targets"
 
-          @"
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <ItemDefinitionGroup Condition="'`$(Platform)' == 'ARM64'">
-    <Link>
-      <AdditionalLibraryDirectories>$arm64LibDir;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalOptions>/LIBPATH:&quot;$arm64LibDir&quot; %(AdditionalOptions)</AdditionalOptions>
-    </Link>
-  </ItemDefinitionGroup>
+          $targetsContent = @"
+          <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+            <ItemDefinitionGroup Condition="'`$(Platform)' == 'ARM64'">
+              <Link>
+                <AdditionalLibraryDirectories>$arm64LibDir;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+                <AdditionalOptions>/LIBPATH:&quot;$arm64LibDir&quot; %(AdditionalOptions)</AdditionalOptions>
+              </Link>
+            </ItemDefinitionGroup>
 
-  <ItemDefinitionGroup Condition="'`$(Platform)' == 'x64' And '$x64LibDir' != ''">
-    <Link>
-      <AdditionalLibraryDirectories>$x64LibDir;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalOptions>/LIBPATH:&quot;$x64LibDir&quot; %(AdditionalOptions)</AdditionalOptions>
-    </Link>
-  </ItemDefinitionGroup>
-</Project>
-"@ | Set-Content -Path $propsPath -Encoding UTF8
+            <ItemDefinitionGroup Condition="'`$(Platform)' == 'x64' And '$x64LibDir' != ''">
+              <Link>
+                <AdditionalLibraryDirectories>$x64LibDir;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+                <AdditionalOptions>/LIBPATH:&quot;$x64LibDir&quot; %(AdditionalOptions)</AdditionalOptions>
+              </Link>
+            </ItemDefinitionGroup>
+          </Project>
+          "@
 
-          Write-Host "Generated props:"
-          Get-Content $propsPath
+          Set-Content -Path $targetsPath -Value $targetsContent -Encoding UTF8
+
+          Write-Host "Generated targets:"
+          Get-Content $targetsPath
 
       - name: 🔎 Check build environment
         shell: pwsh
@@ -203,7 +205,7 @@ jobs:
             /p:PackageOptionalProjectsInIdeBuilds=False `
             /p:AppxPackageSigningEnabled=true `
             /p:GenerateAppxPackageOnBuild=true `
-            "/p:ForceImportAfterCppProps=$env:GITHUB_WORKSPACE\llvm-runtime.props" `
+            "/p:ForceImportAfterCppTargets=$env:GITHUB_WORKSPACE\llvm-runtime.targets" `
             --restore
 
       - name: 📦 Upload ${{ matrix.platform }} AppPackages
@@ -239,7 +241,7 @@ jobs:
       version_code: ${{ needs.prepare.outputs.version_code }}
       build_id: ${{ needs.prepare.outputs.build_id }}
       buildtime: ${{ needs.prepare.outputs.buildtime }}
-      version_name: v1.0 ${{ needs.prepare.outputs.build_id }}
+      version_name: "v1.0 ${{ needs.prepare.outputs.build_id }}"
 
     steps:
       - name: 🌸 Checkout
